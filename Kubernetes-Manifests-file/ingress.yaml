@@ -11,7 +11,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: himanshudevops.work.gd
+    - host: a50d-45-118-107-42.ngrok-free.app
       http:
         paths:
           - path: /api
