@@ -25,7 +25,7 @@ spec:
       - name: my-docker-secret
       containers:
       - name: frontend
-        image: docker.io/himanshu7000/frontend:110
+        image: docker.io/himanshu7000/frontend:111
         imagePullPolicy: Always
         env:
           - name: REACT_APP_BACKEND_URL
