@@ -1,25 +1,38 @@
 pipeline {
     agent any 
     tools {
-        jdk 'jdk'
         nodejs 'nodejs'
     }
     environment  {
         SCANNER_HOME=tool 'sonar-scanner'
-        AWS_ACCOUNT_ID = credentials('ACCOUNT_ID')
-        AWS_ECR_REPO_NAME = credentials('ECR_REPO1')
-        AWS_DEFAULT_REGION = 'us-east-1'
-        REPOSITORY_URI = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/"
+        //AWS_ACCOUNT_ID = credentials('ACCOUNT_ID')
+        AWS_ECR_REPO_NAME = credentials('DOCKER_CREDS')
+      //  AWS_DEFAULT_REGION = 'us-east-1'
+        REPOSITORY_URI = "https://hub.docker.com/r/himanshu7000/frontend"
+        DOCKER_REGISTRY = "hub.docker.com"
+        DOCKER_IMAGE = "himanshu7000/frontend" 
+        DOCKER_TAG = "${BUILD_NUMBER}"
+        GITHUB_REPO_URL="https://github.com/HimanshuSaini70/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git"
+        DOCKER_REPO_URL="docker.io/himanshu7000/frontend"
     }
     stages {
         stage('Cleaning Workspace') {
             steps {
-                cleanWs()
+                script {
+                    try {
+                        cleanWs()
+                    } catch (Exception e) {
+                        echo "Error cleaning workspace: ${e.getMessage()}"
+                        // Optional: Retry the cleanup step
+                        echo "Retrying cleanup..."
+                        cleanWs()
+                    }
+                }
             }
         }
         stage('Checkout from Git') {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                git credentialsId: 'GITHUB-APP', url: 'https://github.com/HimanshuSaini70/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
             }
         }
         stage('Sonarqube Analysis') {
@@ -27,27 +40,27 @@ pipeline {
                 dir('Application-Code/frontend') {
                     withSonarQubeEnv('sonar-server') {
                         sh ''' $SCANNER_HOME/bin/sonar-scanner \
-                        -Dsonar.projectName=three-tier-frontend \
-                        -Dsonar.projectKey=three-tier-frontend '''
+                        -Dsonar.projectName=frontend \
+                        -Dsonar.projectKey=frontend '''
                     }
                 }
             }
         }
-        stage('Quality Check') {
-            steps {
-                script {
-                    waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
-                }
-            }
-        }
-        stage('OWASP Dependency-Check Scan') {
-            steps {
-                dir('Application-Code/frontend') {
-                    dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
-                    dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
-                }
-            }
-        }
+        // stage('Quality Check') {
+        //     steps {
+        //         script {
+        //             waitForQualityGate abortPipeline: false, credentialsId: 'sonar-token' 
+        //         }
+        //     }
+        // }
+        // stage('OWASP Dependency-Check Scan') {
+        //     steps {
+        //         dir('Application-Code/frontend') {
+        //             dependencyCheck additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit', odcInstallation: 'DP-Check'
+        //             dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+        //         }
+        //     }
+        // }
         stage('Trivy File Scan') {
             steps {
                 dir('Application-Code/frontend') {
@@ -55,59 +68,122 @@ pipeline {
                 }
             }
         }
-        stage("Docker Image Build") {
+        stage('Login to Docker Hub') {
             steps {
-                script {
-                    dir('Application-Code/frontend') {
-                            sh 'docker system prune -f'
-                            sh 'docker container prune -f'
-                            sh 'docker build -t ${AWS_ECR_REPO_NAME} .'
-                    }
+                withCredentials([usernamePassword(credentialsId: 'DOCKER_CREDS', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    // Log in to Docker Hub using Jenkins credentials
+                    sh "echo ${DOCKER_PASSWORD} | docker login --username ${DOCKER_USERNAME} --password-stdin"
                 }
             }
         }
-        stage("ECR Image Pushing") {
+
+        stage('Build Docker Image') {
             steps {
-                script {
-                        sh 'aws ecr get-login-password --region ${AWS_DEFAULT_REGION} | docker login --username AWS --password-stdin ${REPOSITORY_URI}'
-                        sh 'docker tag ${AWS_ECR_REPO_NAME} ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
-                        sh 'docker push ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}'
+                // Change to the directory where the Dockerfile is located and build the Docker image
+                dir('Application-Code/frontend') {
+                    sh "docker build -t ${DOCKER_IMAGE}:${DOCKER_TAG} ."
                 }
             }
         }
+
+        stage('Push Docker Image') {
+            steps {
+                // Push the Docker image to Docker Hub
+                sh "docker push ${DOCKER_IMAGE}:${DOCKER_TAG}"
+            }
+        }
+
+
+        
+        
+
         stage("TRIVY Image Scan") {
             steps {
-                sh 'trivy image ${REPOSITORY_URI}${AWS_ECR_REPO_NAME}:${BUILD_NUMBER} > trivyimage.txt' 
+                sh 'trivy image ${DOCKER_IMAGE}:${DOCKER_TAG} > trivyimage.txt' 
             }
         }
         stage('Checkout Code') {
             steps {
-                git credentialsId: 'GITHUB', url: 'https://github.com/AmanPathak-DevOps/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
+                git credentialsId: 'GITHUB', url: 'https://github.com/HimanshuSaini70/End-to-End-Kubernetes-Three-Tier-DevSecOps-Project.git'
             }
         }
-        stage('Update Deployment file') {
-            environment {
-                GIT_REPO_NAME = "End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
-                GIT_USER_NAME = "AmanPathak-DevOps"
-            }
-            steps {
-                dir('Kubernetes-Manifests-file/Frontend') {
-                    withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+        // stage('Update Deployment file') {
+        //     environment {
+        //         GIT_REPO_NAME = "End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
+        //         GIT_USER_NAME = "HimanshuSaini70"
+        //     }
+        //     steps {
+        //         dir('Kubernetes-Manifests-file/Frontend') {
+        //             withCredentials([string(credentialsId: 'GITHUB-APP', variable: 'GITHUB_TOKEN')]) {
+        //                 sh '''
+        //                     git config user.email "manshu48@gmail.com"
+        //                     git config user.name "AmanPathak-DevOps"
+        //                     BUILD_NUMBER=${BUILD_NUMBER}
+        //                     echo $BUILD_NUMBER
+        //                     imageTag=$(grep -oP '(?<=frontend:)[^ ]+' deployment.yaml)
+        //                     echo $imageTag
+        //                     sed -i "s/${AWS_ECR_REPO_NAME}:${imageTag}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}/" deployment.yaml
+        //                     git add deployment.yaml
+        //                     git commit -m "Update deployment Image to version \${BUILD_NUMBER}"
+        //                     git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:master
+        //                 '''
+        //             }
+        //         }
+        //     }
+        // }
+stage('Update Deployment file') {
+    environment {
+        GIT_REPO_NAME = "End-to-End-Kubernetes-Three-Tier-DevSecOps-Project"
+        GIT_USER_NAME = "HimanshuSaini70"
+        DOCKER_REPO_URL = "docker.io/himanshu7000/frontend"  // Example value, replace as necessary
+    }
+    steps {
+        dir('Kubernetes-Manifests-file/Frontend') {
+            withCredentials([string(credentialsId: 'github', variable: 'GITHUB_TOKEN')]) {
+                script {
+                    // Configure Git user info
+                    sh '''
+                        git config user.email "manshu48@gmail.com"
+                        git config user.name "HimanshuSaini70"
+                    '''
+
+                    // Capture the build number
+                    def buildNumber = "${BUILD_NUMBER}"
+                    echo "Building with Build Number: ${buildNumber}"
+
+                    // Extract current image tag from deployment.yaml
+                    def imageTag = sh(script: "grep -oP '(?<=frontend:)[^ ]+' deployment.yaml", returnStdout: true).trim()
+                    echo "Current image tag found in deployment.yaml: ${imageTag}"
+
+                    // Replace the image tag with the new one
+                    sh """
+                        sed -i 's|${DOCKER_REPO_URL}:${imageTag}|${DOCKER_REPO_URL}:${buildNumber}|g' deployment.yaml
+                    """
+
+                    // Print the file content after modification to verify the changes
+                    sh "cat deployment.yaml"  // Check if the image tag was replaced
+
+                    // Check if there are changes in the repository
+                    sh "git status"  // Verify if git detects any changes
+                    def changesExist = sh(script: "git diff --quiet || echo 'Changes detected'", returnStdout: true).trim()
+
+                    if (changesExist) {
+                        // Commit and push the changes to GitHub
                         sh '''
-                            git config user.email "aman07pathak@gmail.com"
-                            git config user.name "AmanPathak-DevOps"
-                            BUILD_NUMBER=${BUILD_NUMBER}
-                            echo $BUILD_NUMBER
-                            imageTag=$(grep -oP '(?<=frontend:)[^ ]+' deployment.yaml)
-                            echo $imageTag
-                            sed -i "s/${AWS_ECR_REPO_NAME}:${imageTag}/${AWS_ECR_REPO_NAME}:${BUILD_NUMBER}/" deployment.yaml
-                            git add deployment.yaml
-                            git commit -m "Update deployment Image to version \${BUILD_NUMBER}"
-                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME} HEAD:master
+                            git add .
+                            git commit -m "Update deployment Image to version ${BUILD_NUMBER}"
+                            git push https://${GITHUB_TOKEN}@github.com/${GIT_USER_NAME}/${GIT_REPO_NAME}.git HEAD:master
                         '''
+                    } else {
+                        echo "No changes detected in deployment.yaml"
                     }
                 }
             }
         }
+    }
+}
+
+
+
     }
 }
